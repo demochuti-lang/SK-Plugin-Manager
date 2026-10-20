@@ -1,5 +1,3 @@
-//! CSXS manifest parsing, script target sniffing, and version comparison.
-
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
@@ -41,26 +39,49 @@ fn attr_value<'a>(
 
 /// Parse a CSXS `manifest.xml`. Errors when the bundle id is missing or when
 /// no supported Adobe host remains after filtering.
+///
+/// Real-world CEP format (what Adobe and extension authors actually ship):
+/// `<ExtensionManifest ExtensionBundleId="com.x" ExtensionBundleVersion="1.0">`
+/// with `<ExtensionList><Extension Id="…" Version="…"/></ExtensionList>` and
+/// `<HostList><Host Name="PPRO" …/></HostList>` children. A legacy
+/// `<ExtensionBundle Id="…" Version="…">` root is also accepted.
 pub fn parse_manifest_xml(xml: &str) -> Result<ExtensionManifest, String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
     let mut bundle_id: Option<String> = None;
-    let mut version = "unknown".to_string();
+    let mut bundle_version: Option<String> = None;
+    let mut extension_version: Option<String> = None;
     let mut hosts: Vec<AppId> = Vec::new();
 
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
-                b"ExtensionBundle" => {
-                    if let Some(id) = attr_value(&e, &reader, b"Id") {
-                        bundle_id = Some(id);
+                b"ExtensionManifest" => {
+                    if bundle_id.is_none() {
+                        bundle_id = attr_value(&e, &reader, b"ExtensionBundleId");
                     }
-                    if let Some(v) = attr_value(&e, &reader, b"Version") {
-                        if !v.trim().is_empty() {
-                            version = v.trim().to_string();
-                        }
+                    if bundle_version.is_none() {
+                        bundle_version = attr_value(&e, &reader, b"ExtensionBundleVersion");
+                    }
+                }
+                b"ExtensionBundle" => {
+                    if bundle_id.is_none() {
+                        bundle_id = attr_value(&e, &reader, b"Id");
+                    }
+                    if bundle_version.is_none() {
+                        bundle_version = attr_value(&e, &reader, b"Version");
+                    }
+                }
+                b"Extension" => {
+                    // Fallbacks only: the root element is parsed before its
+                    // children, so real bundle attrs always win over these.
+                    if extension_version.is_none() {
+                        extension_version = attr_value(&e, &reader, b"Version");
+                    }
+                    if bundle_id.is_none() {
+                        bundle_id = attr_value(&e, &reader, b"Id");
                     }
                 }
                 b"Host" => {
@@ -82,10 +103,14 @@ pub fn parse_manifest_xml(xml: &str) -> Result<ExtensionManifest, String> {
     }
 
     let bundle_id =
-        bundle_id.ok_or_else(|| "manifest missing ExtensionBundle @Id".to_string())?;
+        bundle_id.ok_or_else(|| "manifest missing ExtensionBundleId".to_string())?;
     if hosts.is_empty() {
         return Err("No supported Adobe host found in manifest".to_string());
     }
+    let version = bundle_version
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| extension_version.filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "unknown".to_string());
     Ok(ExtensionManifest {
         bundle_id,
         version,
@@ -307,6 +332,42 @@ mod tests {
         assert_eq!(m.bundle_id, "com.example.coolfx");
         assert_eq!(m.version, "1.2.3");
         assert_eq!(m.target_apps, vec![AppId::Ae, AppId::Pp]);
+    }
+
+    #[test]
+    fn manifest_parses_real_cep_format() {
+        // Mirrors what Adobe/extension authors actually ship (e.g. Knights of
+        // the Editing Table's Excalibur for Premiere Pro).
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.knightsoftheeditingtable.excalibur" ExtensionBundleVersion="1.2.3" ExtensionBundleName="Excalibur">
+  <ExtensionList>
+    <Extension Id="com.knightsoftheeditingtable.excalibur" Version="1.2.3"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[14.0,99.9]"/>
+    </HostList>
+    <LocaleList><Locale Code="All"/></LocaleList>
+    <RequiredRuntimeList><RequiredRuntime Name="CSXS" Version="7.0"/></RequiredRuntimeList>
+  </ExecutionEnvironment>
+</ExtensionManifest>"#;
+        let m = parse_manifest_xml(xml).unwrap();
+        assert_eq!(m.bundle_id, "com.knightsoftheeditingtable.excalibur");
+        assert_eq!(m.version, "1.2.3");
+        assert_eq!(m.target_apps, vec![AppId::Pp]);
+    }
+
+    #[test]
+    fn manifest_real_format_version_fallback() {
+        // No ExtensionBundleVersion: fall back to the Extension entry version.
+        let xml = r#"<ExtensionManifest ExtensionBundleId="com.example.y">
+  <ExtensionList><Extension Id="com.example.y.panel" Version="4.5.6"/></ExtensionList>
+  <ExecutionEnvironment><HostList><Host Name="AEFT" Version="[1.0,99.9]"/></HostList></ExecutionEnvironment>
+</ExtensionManifest>"#;
+        let m = parse_manifest_xml(xml).unwrap();
+        assert_eq!(m.bundle_id, "com.example.y");
+        assert_eq!(m.version, "4.5.6");
+        assert_eq!(m.target_apps, vec![AppId::Ae]);
     }
 
     #[test]
