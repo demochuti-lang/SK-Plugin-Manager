@@ -39,11 +39,11 @@ export async function installDropped(paths: string[]): Promise<InstallResult[]> 
 export async function uninstall(
   entry_id: string,
 ): Promise<{ success: boolean; message: string }> {
-  return invoke('uninstall', { entry_id });
+  return invoke('uninstall', { entryId: entry_id });
 }
 
 export async function compareVersion(dropped_path: string): Promise<UpdateCheck> {
-  return invoke('compare_version', { dropped_path });
+  return invoke('compare_version', { droppedPath: dropped_path });
 }
 
 export async function historyList(limit?: number): Promise<HistoryEntry[]> {
@@ -53,7 +53,7 @@ export async function historyList(limit?: number): Promise<HistoryEntry[]> {
 /** Typed wrappers for the Phase 2 backup IPC contract. */
 
 export async function backupNow(uploadToDrive: boolean): Promise<BackupResult> {
-  return invoke('backup_now', { upload_to_drive: uploadToDrive });
+  return invoke('backup_now', { uploadToDrive });
 }
 
 export async function listBackups(): Promise<BackupInfo[]> {
@@ -61,11 +61,11 @@ export async function listBackups(): Promise<BackupInfo[]> {
 }
 
 export async function restoreBackup(backupId: string): Promise<RestoreResult> {
-  return invoke('restore_backup', { backup_id: backupId });
+  return invoke('restore_backup', { backupId });
 }
 
 export async function deleteBackup(backupId: string): Promise<SimpleResult> {
-  return invoke('delete_backup', { backup_id: backupId });
+  return invoke('delete_backup', { backupId });
 }
 
 export async function getSettings(): Promise<Record<string, string>> {
@@ -89,7 +89,7 @@ export async function driveDisconnect(): Promise<SimpleResult> {
 }
 
 export async function uploadBackupToDrive(backupId: string): Promise<SimpleResult> {
-  return invoke('upload_backup_to_drive', { backup_id: backupId });
+  return invoke('upload_backup_to_drive', { backupId });
 }
 
 export async function setAutostart(enabled: boolean): Promise<SimpleResult> {
