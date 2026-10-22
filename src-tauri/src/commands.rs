@@ -305,10 +305,23 @@ pub async fn uninstall<R: Runtime>(
         match res {
             Ok(()) => Ok(()),
             Err(_) if !install_path.exists() => Ok(()), // raced away: fine
-            Err(e) => Err(format!(
-                "could not delete {}: {e}",
-                install_path.display()
-            )),
+            Err(e) => {
+                // Windows: extensions in the system CEP folder
+                // (C:\Program Files (x86)\Common Files\Adobe\CEP\extensions)
+                // cannot be deleted by a normal process — retry via UAC.
+                #[cfg(windows)]
+                {
+                    if crate::adobe::remove_path_elevated(&install_path).is_ok()
+                        && !install_path.exists()
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(format!(
+                    "could not delete {}: {e}. If the plugin lives in a protected folder, approve the admin prompt when asked; also close the Adobe app if it is open, since open apps can lock the files.",
+                    install_path.display()
+                ))
+            }
         }
     })
     .await
