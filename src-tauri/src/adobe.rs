@@ -315,6 +315,73 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
+/// Base64-encode (standard alphabet) — just enough for PowerShell
+/// `-EncodedCommand`, which expects UTF-16LE text.
+#[cfg(windows)]
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0] as u32,
+            *chunk.get(1).unwrap_or(&0) as u32,
+            *chunk.get(2).unwrap_or(&0) as u32,
+        ];
+        let n = (b[0] << 16) | (b[1] << 8) | b[2];
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Delete a file or directory with elevation (shows the Windows UAC prompt).
+///
+/// Needed for paths under `C:\Program Files (x86)\...` — where most existing
+/// CEP extensions live — which a non-elevated process cannot modify. The
+/// elevated PowerShell child does the removal; success is judged by the path
+/// being gone afterwards (also covers the user cancelling the UAC prompt).
+#[cfg(windows)]
+pub fn remove_path_elevated(path: &Path) -> Result<(), String> {
+    // Single-quote the path for PowerShell ('' escapes a quote).
+    let ps_path = path.to_string_lossy().replace('\'', "''");
+    let inner = format!(
+        "Remove-Item -LiteralPath '{ps_path}' -Recurse -Force -ErrorAction Stop"
+    );
+    let inner_utf16: Vec<u8> = inner
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let encoded = base64_encode(&inner_utf16);
+    // The outer (non-elevated) shell only launches the elevated one and waits.
+    // The argument list contains base64 only, so quoting stays safe.
+    let outer = format!(
+        "Start-Process powershell -Verb RunAs -Wait -ArgumentList @('-NoProfile','-EncodedCommand','{encoded}')"
+    );
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &outer])
+        .status()
+        .map_err(|e| format!("could not launch admin prompt: {e}"))?;
+    if path.exists() {
+        Err(format!(
+            "{} is still there — the admin prompt may have been cancelled, or the files are in use by an open Adobe app",
+            path.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Script directories
 // ---------------------------------------------------------------------------
